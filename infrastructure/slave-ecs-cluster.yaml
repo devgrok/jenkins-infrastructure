@@ -1,0 +1,354 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+    Slave ECS Cluster. 
+    This template deploys an ECS cluster to the provided VPC and subnets
+    using an Auto Scaling Group
+
+Parameters:
+
+    EcsAmiId:
+        Type: AWS::EC2::Image::Id
+    KeyName:
+        Type: String
+
+    PrivateSubnetIds:
+        Type: CommaDelimitedList
+
+    JenkinsSlaveSecurityGroup:
+        Type: String
+
+    MaxPrice:
+        Type: Number
+        Default: 0.08
+
+
+Mappings:
+
+    # These are the latest ECS optimized AMIs as of Feb 2018:
+    #
+    #   amzn-ami-2017.09.h-amazon-ecs-optimized
+    #   ECS agent:    1.17.1
+    #   Docker:       17.09.1-ce
+    #   ecs-init:     1.17.1-1
+    #
+    # You can find the latest available on this page of our documentation:
+    # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
+    # (note the AMI identifier is region specific)
+
+    AWSRegionToAMI:
+        us-east-2:
+            AMI: ami-64300001
+        us-east-1:
+            AMI: ami-aff65ad2
+        us-west-2:
+            AMI: ami-40ddb938
+        us-west-1:
+            AMI: ami-69677709
+        eu-west-3:
+            AMI: ami-250eb858
+        eu-west-2:
+            AMI: ami-2218f945
+        eu-west-1:
+            AMI: ami-2d386654
+        eu-central-1:
+            AMI: ami-9fc39c74
+        ap-northeast-2:
+            AMI: ami-9d56f9f3
+        ap-northeast-1:
+            AMI: ami-a99d8ad5
+        ap-southeast-2:
+            AMI: ami-efda148d
+        ap-southeast-1:
+            AMI: ami-846144f8
+        ca-central-1:
+            AMI: ami-897ff9ed
+        ap-south-1:
+            AMI: ami-72edc81d
+        sa-east-1:
+            AMI: ami-4a7e2826
+
+
+Conditions:
+
+    HasKeyName: !Not
+        - !Equals
+            - ''
+            -   Ref: KeyName
+
+
+Resources:
+
+    SlaveCluster:
+        Type: 'AWS::ECS::Cluster'
+        Properties:
+            ClusterName: !Sub "${EnvironmentName}-Slave"
+
+    SlaveECSAutoScaling:
+        Type: AWS::AutoScaling::AutoScalingGroup
+        Properties:
+            VPCZoneIdentifier: !Ref PrivateSubnetIds
+            MixedInstancesPolicy:
+                InstancesDistribution:
+                    OnDemandPercentageAboveBaseCapacity: 0
+                    SpotMaxPrice: !Ref MaxPrice
+                LaunchTemplate:
+                    LaunchTemplateSpecification:
+                        LaunchTemplateId: !Ref SlaveECSLaunchTemplate
+                        Version: !GetAtt [SlaveECSLaunchTemplate, LatestVersionNumber]
+                    # instance types have to be manually specified here:
+                    Overrides:
+                        -   InstanceType: m5d.xlarge
+                        -   InstanceType: m5.xlarge
+                        -   InstanceType: m4.xlarge
+            MinSize: !Ref ClusterSize
+            MaxSize: !Ref ClusterSize # * 3
+            DesiredCapacity: !Ref ClusterSize
+            HealthCheckType: EC2
+            HealthCheckGracePeriod: '400'
+            Tags:
+                - Key: Name
+                  Value: !Sub ${EnvironmentName} Slave ECS host
+                  PropagateAtLaunch: true
+        CreationPolicy:
+            ResourceSignal:
+                Timeout: PT15M
+        UpdatePolicy:
+            AutoScalingRollingUpdate:
+                MinInstancesInService: 1
+                MaxBatchSize: 1
+                PauseTime: PT15M
+                SuspendProcesses:
+                    - HealthCheck
+                    - ReplaceUnhealthy
+                    - AZRebalance
+                    - AlarmNotification
+                    - ScheduledActions
+                WaitOnResourceSignals: true
+
+    SlaveECSLaunchTemplate:
+        Type: 'AWS::EC2::LaunchTemplate'
+        Properties:
+            LaunchTemplateData:
+                ImageId: !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
+                IamInstanceProfile:
+                    Arn: !GetAtt [SlaveECSInstanceProfile, Arn]
+                KeyName: !If
+                    - HasKeyName
+                    - !Ref KeyName
+                    - !Ref 'AWS::NoValue'
+                SecurityGroupIds:
+                    - !Ref JenkinsSlaveSecurityGroup
+                BlockDeviceMappings:
+                    -   DeviceName: /dev/xvdcz
+                        Ebs:
+                            VolumeSize: '100'
+                            DeleteOnTermination: true
+                UserData:
+                    Fn::Base64: !Sub |
+                        #!/bin/bash
+                        echo 'ECS_CLUSTER=${SlaveCluster}' >> /etc/ecs/ecs.config
+                        yum install -y amazon-efs-utils nfs-utils aws-cfn-bootstrap
+                        /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource SlaveECSLaunchTemplate
+        Metadata:
+            'AWS::CloudFormation::Init':
+                config:
+                    packages:
+                        yum:
+                            aws-cli: []
+                            jq: []
+                            ecs-init: []
+
+    # This IAM Role can be attached to tasks that are created to jenkins, allowing per node label permissions 
+    # Where each node label could have a different configuration and different role.
+            
+    ECSSlaveTaskRole:
+        Type: 'AWS::IAM::Role'
+        Description: "Jenkins slave ECS Task Role"
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                    -   Effect: Allow
+                        Principal:
+                            Service:
+                                - ecs-tasks.amazonaws.com
+                        Action:
+                            - 'sts:AssumeRole'
+            Path: /
+            # TODO update below with restricted permissions based on your own build environment 
+            Policies:
+                -   PolicyName: ecs-jenkins-slave
+                    PolicyDocument:
+                        Statement:
+                            -   Effect: Allow
+                                Action:
+                                    - 'ec2:Describe*'
+                                    - 'ecr:*'
+                                Resource: '*'
+                            -   Action:
+                                    - s3:*
+                                Resource:
+                                    - arn:aws:s3:::*/*
+                                Effect: Allow
+
+    # This IAM Role is attached to all of the ECS hosts. It is based on the default role
+    # published here:
+    # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/instance_IAM_role.html
+    #
+    # You can add other IAM policy statements here to allow access from your ECS hosts
+    # to other AWS services. Please note that this role will be used by ALL containers
+    # running on the ECS host.
+    
+    SlaveEC2Role:
+        Type: AWS::IAM::Role
+        Description: "Jenkins slave EC2 (ECS Container Instance) Role"
+        Properties:
+            Path: /
+            RoleName: !Sub ${EnvironmentName}-SlaveECSRole-${AWS::Region}
+            AssumeRolePolicyDocument:
+                Statement:
+                    -   Effect: Allow
+                        Principal:
+                            Service:
+                                - ec2.amazonaws.com
+                        Action:
+                            - 'sts:AssumeRole'
+            Policies:
+                -   PolicyName: ecs-service
+                    PolicyDocument:
+                        Statement:
+                            -   Effect: Allow
+                                Action:
+                                    - 'elasticloadbalancing:Describe*'
+                                    - 'logs:CreateLogGroup'
+                                Resource: '*'
+                            -   Sid: AmazonEC2ContainerServiceforEC2Role
+                                Effect: Allow
+                                Action:
+                                    - "ecs:CreateCluster"
+                                    - "ecs:DeregisterContainerInstance"
+                                    - "ecs:DiscoverPollEndpoint"
+                                    - "ecs:Poll"
+                                    - "ecs:RegisterContainerInstance"
+                                    - "ecs:StartTelemetrySession"
+                                    - "ecs:Submit*"
+                                    - "ecr:GetAuthorizationToken"
+                                    - "ecr:BatchCheckLayerAvailability"
+                                    - "ecr:GetDownloadUrlForLayer"
+                                    - "ecr:BatchGetImage"
+                                    - "logs:CreateLogStream"
+                                    - "logs:PutLogEvents"
+                                Resource: '*'
+                -   PolicyName: read-s3
+                    PolicyDocument:
+                        Statement:
+                            -   Action:
+                                    - s3:GetObject
+                                Resource:
+                                    - arn:aws:s3:::*/*
+                                Effect: Allow
+
+    SlaveECSInstanceProfile:
+        Type: AWS::IAM::InstanceProfile
+        Properties:
+            Path: /
+            Roles: 
+                - !Ref SlaveEC2Role
+
+    ECSServiceAutoScalingRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    Action:
+                        - 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                        Service:
+                            - application-autoscaling.amazonaws.com
+            Path: /
+            Policies:
+                -   PolicyName: ecs-service-autoscaling
+                    PolicyDocument:
+                        Statement:
+                            Effect: Allow
+                            Action:
+                                - application-autoscaling:*
+                                - cloudwatch:DescribeAlarms
+                                - cloudwatch:PutMetricAlarm
+                                - ecs:DescribeServices
+                                - ecs:UpdateService
+                            Resource: "*"
+
+    JenkinsClusterScaleUpPolicy:
+        Type: 'AWS::AutoScaling::ScalingPolicy'
+        Properties:
+            AdjustmentType: ChangeInCapacity
+            AutoScalingGroupName: !Ref JenkinsSlaveECSAutoScaling
+            EstimatedInstanceWarmup: 60
+            MetricAggregationType: Average
+            PolicyType: StepScaling
+            StepAdjustments:
+                -   MetricIntervalLowerBound: 0
+                    ScalingAdjustment: 2
+
+    JenkinsClusterScaleUpAlarm:
+        Type: 'AWS::CloudWatch::Alarm'
+        Properties:
+            AlarmDescription: CPU reservation peaked at 70% during the last minute
+            AlarmName: JenkinsClusterScaleUpAlarm
+            AlarmActions:
+                - !Ref JenkinsClusterScaleUpPolicy
+            Dimensions:
+                -   Name: ClusterName
+                    Value: !Ref JenkinsSlaveCluster
+            MetricName: CPUReservation
+            Namespace: AWS/ECS
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            Statistic: Maximum
+            Threshold: 70
+            Period: 60
+            EvaluationPeriods: 1
+            TreatMissingData: notBreaching
+
+    JenkinsClusterScaleDownPolicy:
+        Type: 'AWS::AutoScaling::ScalingPolicy'
+        Properties:
+            AdjustmentType: PercentChangeInCapacity
+            AutoScalingGroupName: !Ref JenkinsSlaveECSAutoScaling
+            Cooldown: '120'
+            ScalingAdjustment: '-50'
+
+    JenkinsClusterScaleDownAlarm:
+        Type: 'AWS::CloudWatch::Alarm'
+        Properties:
+            AlarmDescription: >-
+                CPU reservation is under 50% for the last 10 min (change 10 min to 45
+                min for prod use as you pay by the hour )
+            AlarmName: JenkinsClusterScaleDownAlarm
+            AlarmActions:
+                - !Ref JenkinsClusterScaleDownPolicy
+            Dimensions:
+                -   Name: ClusterName
+                    Value: !Ref JenkinsSlaveCluster
+            MetricName: CPUReservation
+            Namespace: AWS/ECS
+            ComparisonOperator: LessThanThreshold
+            Statistic: Maximum
+            Threshold: 50
+            Period: 600
+            EvaluationPeriods: 1
+            TreatMissingData: notBreaching
+
+Outputs:
+    Cluster:
+        Description: A reference to the ECS cluster (slave)
+        Value: !Ref SlaveCluster
+
+    ECSServiceAutoScalingRole:
+        Description: A reference to ECS service auto scaling role (slave)
+        Value: !GetAtt ECSServiceAutoScalingRole.Arn
+
+    ECSAutoScalingGroupName:
+        Description: A reference to ECS AutoScaling Group Name (slave)
+        Value: !Ref JenkinsSlaveECSAutoScaling

@@ -85,4 +85,4 @@ Resources:
             Parameters:
                 VPC: !GetAtt VPC.Outputs.VPC
                 Cluster: !GetAtt ECS.Outputs.Cluster
-                Listener: !GetAtt ALB.Outputs.Listener 
+                LoadBalancer: !GetAtt ECS.Outputs.LoadBalancer 

@@ -1,0 +1,355 @@
+Description: >
+    Master ECS Cluster
+    This template deploys an ECS cluster to the provided VPC and subnets
+    using an Auto Scaling Group
+
+Parameters:
+
+    EnvironmentName:
+        Description: An environment name that will be prefixed to resource names
+        Type: String
+
+    InstanceType:
+        Description: Which instance type should we use to build the ECS cluster?
+        Type: String
+        Default: t3.medium
+
+    ClusterSize:
+        Description: How many ECS hosts do you want to initially deploy?
+        Type: Number
+        Default: 3
+
+    VPC:
+        Description: Choose which VPC this ECS cluster should be deployed to
+        Type: AWS::EC2::VPC::Id
+
+    Subnets:
+        Description: Choose which subnets this ECS cluster should be deployed to
+        Type: List<AWS::EC2::Subnet::Id>
+
+    MasterEc2SecurityGroup:
+        Description: Select the Security Group to use for the ECS cluster hosts
+        Type: AWS::EC2::SecurityGroup::Id
+    
+    EFSMountTargetSecurityGroup:
+        Description: Select the Security Group to use for the ECS cluster hosts to access EFS
+        Type: AWS::EC2::SecurityGroup::Id
+
+    LoadBalancerSubnets:
+        Description: Choose which subnets the Load Balancer should be deployed to
+        Type: List<AWS::EC2::Subnet::Id>
+
+    MasterELBSecurityGroup:
+        Description: Select the Security Group to apply to the Load Balancer
+        Type: AWS::EC2::SecurityGroup::Id
+
+    LoadBalancerCertificateArn:
+        Type: String
+        Default: 'arn:aws:acm:us-east-1:151743893450:certificate/4e2017af-9197-46e0-83bf-49b910d37366'
+
+Mappings:
+
+    # These are the latest ECS optimized AMIs as of Feb 2018:
+    #
+    #   amzn-ami-2017.09.h-amazon-ecs-optimized
+    #   ECS agent:    1.17.1
+    #   Docker:       17.09.1-ce
+    #   ecs-init:     1.17.1-1
+    #
+    # You can find the latest available on this page of our documentation:
+    # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
+    # (note the AMI identifier is region specific)
+
+    AWSRegionToAMI:
+        us-east-2:
+            AMI: ami-64300001
+        us-east-1:
+            AMI: ami-aff65ad2
+        us-west-2:
+            AMI: ami-40ddb938
+        us-west-1:
+            AMI: ami-69677709
+        eu-west-3:
+            AMI: ami-250eb858
+        eu-west-2:
+            AMI: ami-2218f945
+        eu-west-1:
+            AMI: ami-2d386654
+        eu-central-1:
+            AMI: ami-9fc39c74
+        ap-northeast-2:
+            AMI: ami-9d56f9f3
+        ap-northeast-1:
+            AMI: ami-a99d8ad5
+        ap-southeast-2:
+            AMI: ami-efda148d
+        ap-southeast-1:
+            AMI: ami-846144f8
+        ca-central-1:
+            AMI: ami-897ff9ed
+        ap-south-1:
+            AMI: ami-72edc81d
+        sa-east-1:
+            AMI: ami-4a7e2826	
+
+
+Conditions:
+
+    HasKeyName: !Not
+        - !Equals
+            - ''
+            -   Ref: KeyName
+
+
+Resources:
+
+    MasterCluster:
+        Type: AWS::ECS::Cluster
+        Properties:
+            ClusterName: !Sub "${EnvironmentName}-Master"
+
+    EFSFileSystem:
+      Type: "AWS::EFS::FileSystem"
+      Properties:
+        FileSystemTags:
+          -
+            Key: "Name"
+            Value: !Ref MasterCluster
+        PerformanceMode: "generalPurpose"
+
+    EFSMountTarget0:
+      Type: "AWS::EFS::MountTarget"
+      Properties:
+        FileSystemId: !Ref EFSFileSystem
+        SecurityGroups:
+          - !Ref EFSMountTargetSecurityGroup
+        SubnetId: !Select [ 0, !Ref Subnets]
+
+    EFSMountTarget1:
+      Type: "AWS::EFS::MountTarget"
+      Properties:
+        FileSystemId: !Ref EFSFileSystem
+        SecurityGroups:
+          - !Ref EFSMountTargetSecurityGroup
+        SubnetId: !Select [ 1, !Ref Subnets]
+        
+    EFSMountTarget2:
+      Type: "AWS::EFS::MountTarget"
+      Properties:
+        FileSystemId: !Ref EFSFileSystem
+        SecurityGroups:
+          - !Ref EFSMountTargetSecurityGroup
+        SubnetId: !Select [ 2, !Ref Subnets]
+
+    MasterECSAutoScaling:
+        Type: AWS::AutoScaling::AutoScalingGroup
+        Properties:
+            VPCZoneIdentifier: !Ref Subnets
+            LaunchTemplate:
+                LaunchTemplateId: !Ref MasterECSLaunchTemplate
+                Version: !GetAtt [MasterECSLaunchTemplate, LatestVersionNumber]
+            MinSize: !Ref ClusterSize
+            MaxSize: !Ref ClusterSize # +1
+            DesiredCapacity: !Ref ClusterSize
+            Tags:
+                - Key: Name
+                  Value: !Sub ${EnvironmentName} Master ECS host
+                  PropagateAtLaunch: true
+        CreationPolicy:
+            ResourceSignal:
+                Timeout: PT15M                
+        UpdatePolicy:
+            AutoScalingRollingUpdate:
+                MinInstancesInService: 1
+                MaxBatchSize: 1
+                PauseTime: PT15M
+                SuspendProcesses:
+                  - HealthCheck
+                  - ReplaceUnhealthy
+                  - AZRebalance
+                  - AlarmNotification
+                  - ScheduledActions
+                WaitOnResourceSignals: true
+
+    MasterECSLaunchTemplate:
+        Type: 'AWS::EC2::LaunchTemplate'
+        Properties:
+            LaunchTemplateData:
+                ImageId: !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
+                IamInstanceProfile:
+                    Arn: !GetAtt [MasterECSInstanceProfile, Arn]
+                InstanceType: !Ref InstanceType
+                KeyName: !If
+                    - HasKeyName
+                    - !Ref KeyName
+                    - !Ref 'AWS::NoValue'
+                SecurityGroupIds:
+                    - !Ref MasterEc2SecurityGroup
+                BlockDeviceMappings:
+                    - DeviceName: /dev/xvdcz
+                      Ebs:
+                          VolumeSize: '24'
+                          DeleteOnTermination: true
+                InstanceMarketOptions:
+                    MarketType: spot
+                UserData:
+                    Fn::Base64: !Sub |
+                        #!/bin/bash
+                        echo 'ECS_CLUSTER=${MasterCluster}' >> /etc/ecs/ecs.config
+                        yum install -y amazon-efs-utils nfs-utils aws-cfn-bootstrap
+                        /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource MasterECSLaunchTemplate
+                        #Mount EFS volume
+                        EC2_AVAIL_ZONE=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone`
+                        EC2_REGION=${AWS::Region}
+                        EFS_FILE_SYSTEM_ID=${EFSFileSystem}
+                        EFS_PATH="$EC2_AVAIL_ZONE.$EFS_FILE_SYSTEM_ID.efs.$EC2_REGION.amazonaws.com"
+                        mkdir -p /mnt/efs
+                        mkdir -p /data
+                        #echo "$EFS_PATH:/ /data ntfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport" >> /etc/fstab
+                        echo "$EFS_FILE_SYSTEM_ID:/ /data efs defaults" >> /etc/fstab
+                        mount -a
+                        #Give ownership to jenkins user
+                        chown 1000 /data
+        Metadata:
+            'AWS::CloudFormation::Init':
+                config:
+                    packages:
+                        yum:
+                            aws-cli: []
+                            jq: []
+                            ecs-init: []
+
+
+    ECSLoadBalancer:
+        Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
+        Properties:
+            Scheme: internal
+            Subnets: !Ref PrivateSubnetIds
+            SecurityGroups: 
+                - !Ref MasterELBSecurityGroup
+            Listeners:
+            - LoadBalancerPort: '80'
+              InstancePort: '8080'
+              Protocol: HTTP
+            - LoadBalancerPort: '443'
+              InstancePort: '8080'
+              Protocol: HTTPS
+              SSLCertificateId: !Ref LoadBalancerCertificateArn  
+            - LoadBalancerPort: '50000'
+              InstancePort: '50000'
+              Protocol: TCP            
+              InstanceProtocol: TCP              
+            ConnectionSettings:
+                IdleTimeout: 300              
+            HealthCheck:
+                Target: HTTP:8080/login
+                HealthyThreshold: '3'
+                UnhealthyThreshold: '3'
+                Interval: '15'
+                Timeout: '12'
+
+
+    # This IAM Role is attached to all of the ECS hosts. It is based on the default role
+    # published here:
+    # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/instance_IAM_role.html
+    #
+    # You can add other IAM policy statements here to allow access from your ECS hosts
+    # to other AWS services. Please note that this role will be used by the master container only.
+
+    MasterEC2Role:
+        Type: AWS::IAM::Role
+        Properties:
+            Path: /
+            RoleName: !Sub ${EnvironmentName}-MasterEC2Role-${AWS::Region}
+            AssumeRolePolicyDocument:
+                Statement:
+                - Effect: Allow
+                Principal:
+                  Service:
+                  - ec2.amazonaws.com
+                Action:
+                - 'sts:AssumeRole'
+            Policies:
+                -   PolicyName: ecs-service
+                    PolicyDocument:
+                    Statement:
+                     - Effect: Allow
+                       Action:
+                         - 'elasticloadbalancing:Describe*'
+                         - 'logs:CreateLogGroup'
+                         - 'logs:CreateLogStream'
+                         - 'logs:PutLogEvents'
+                         - 'ecs:*'
+                         - 'ecr:*'
+                       Resource: '*'
+                     - Sid: PassSlaveECSRole
+                       Effect: Allow
+                       Action: 
+                         - 'iam:PassRole'
+                       # this is bit of a hack to avoid the cyclic dependencies which is a pain in a nested stack
+                       Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${EnvironmentName}-SlaveECSRole-${AWS::Region}'
+                     - Sid: AllowEc2Launch
+                       Effect: Allow
+                       Action:
+                         - "ec2:DescribeSpotInstanceRequests"
+                         - "ec2:CancelSpotInstanceRequests"
+                         - "ec2:GetConsoleOutput"
+                         - "ec2:RequestSpotInstances"
+                         - "ec2:RunInstances"
+                         - "ec2:StartInstances"
+                       Resource: '*'
+
+    MasterECSInstanceProfile:
+        Type: AWS::IAM::InstanceProfile
+        Properties:
+            Path: /
+            Roles:
+                - !Ref MasterEC2Role
+
+    ECSServiceAutoScalingRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    Action:
+                    - 'sts:AssumeRole'
+                    Effect: Allow
+                    Principal:
+                        Service:
+                        - application-autoscaling.amazonaws.com
+            Path: /
+            Policies:
+            - PolicyName: ecs-service-autoscaling
+              PolicyDocument:
+                  Statement:
+                      Effect: Allow
+                      Action:
+                      - application-autoscaling:*
+                      - cloudwatch:DescribeAlarms
+                      - cloudwatch:PutMetricAlarm
+                      - ecs:DescribeServices
+                      - ecs:UpdateService
+                      Resource: "*"
+
+Outputs:
+
+    Cluster:
+        Description: A reference to the ECS cluster
+        Value: !Ref MasterCluster
+
+    ECSServiceAutoScalingRole:
+        Description: A reference to ECS service auto scaling role
+        Value: !GetAtt ECSServiceAutoScalingRole.Arn
+
+    MasterECSAutoScalingName:
+        Description: A reference to ECS AutoScaling Group Name
+        Value: !Ref MasterECSAutoScaling
+
+    LoadBalancer:
+        Description: A reference to the Application Load Balancer
+        Value: !Ref ECSLoadBalancer
+
+    LoadBalancerUrl:
+        Description: The URL of the ALB
+        Value: !GetAtt ECSLoadBalancer.DNSName
