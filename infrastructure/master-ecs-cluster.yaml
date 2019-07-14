@@ -46,15 +46,18 @@ Parameters:
     LoadBalancerCertificateArn:
         Type: String
         Default: 'arn:aws:acm:us-east-1:151743893450:certificate/4e2017af-9197-46e0-83bf-49b910d37366'
-
+    
+    KeyName:
+        Type: String
+        Default: ''
 Mappings:
 
     # These are the latest ECS optimized AMIs as of Feb 2018:
     #
-    #   amzn-ami-2017.09.h-amazon-ecs-optimized
-    #   ECS agent:    1.17.1
-    #   Docker:       17.09.1-ce
-    #   ecs-init:     1.17.1-1
+    #   amzn2-ami-ecs-hvm-2.0.20190614-x86_64-ebs
+    #   ECS agent:    1.29.0
+    #   Docker:       18.06.1-ce
+    #   ecs-init:     1.29.0-1
     #
     # You can find the latest available on this page of our documentation:
     # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
@@ -62,35 +65,37 @@ Mappings:
 
     AWSRegionToAMI:
         us-east-2:
-            AMI: ami-64300001
+            AMI: ami-0329a1fdc914b0c55
         us-east-1:
-            AMI: ami-aff65ad2
-        us-west-2:
-            AMI: ami-40ddb938
+            AMI: ami-02507631a9f7bc956
         us-west-1:
-            AMI: ami-69677709
-        eu-west-3:
-            AMI: ami-250eb858
-        eu-west-2:
-            AMI: ami-2218f945
-        eu-west-1:
-            AMI: ami-2d386654
-        eu-central-1:
-            AMI: ami-9fc39c74
-        ap-northeast-2:
-            AMI: ami-9d56f9f3
+            AMI: ami-0e7f661f69bb5d6b4
+        us-west-2:
+            AMI: ami-00e0090ac21971297
+        ap-east-1:
+            AMI: ami-01cb1066e1ad93cba
         ap-northeast-1:
-            AMI: ami-a99d8ad5
-        ap-southeast-2:
-            AMI: ami-efda148d
-        ap-southeast-1:
-            AMI: ami-846144f8
-        ca-central-1:
-            AMI: ami-897ff9ed
+            AMI: ami-052f2fa11c7145e04
+        ap-northeast-2:
+            AMI: ami-0400d18ee6d078a95
         ap-south-1:
-            AMI: ami-72edc81d
+            AMI: ami-05af3f57a0b59fb78
+        ap-southeast-1:
+            AMI: ami-0e8baaccc62ee0a9f
+        ap-southeast-2:
+            AMI: ami-01711df8fe87a6217
+        eu-west-3:
+            AMI: ami-071f4e4006f9c3211
+        eu-west-2:
+            AMI: ami-013b322dbc79e9a6a
+        eu-west-1:
+            AMI: ami-04a084a6d17d9816e
+        eu-central-1:
+            AMI: ami-09577c19fbe1bd7fa
+        ca-central-1:
+            AMI: ami-04fc06e24a65297fb
         sa-east-1:
-            AMI: ami-4a7e2826	
+            AMI: ami-01569d819ef2d5743	
 
 
 Conditions:
@@ -133,14 +138,6 @@ Resources:
           - !Ref EFSMountTargetSecurityGroup
         SubnetId: !Select [ 1, !Ref Subnets]
         
-    EFSMountTarget2:
-      Type: "AWS::EFS::MountTarget"
-      Properties:
-        FileSystemId: !Ref EFSFileSystem
-        SecurityGroups:
-          - !Ref EFSMountTargetSecurityGroup
-        SubnetId: !Select [ 2, !Ref Subnets]
-
     MasterECSAutoScaling:
         Type: AWS::AutoScaling::AutoScalingGroup
         Properties:
@@ -224,7 +221,7 @@ Resources:
         Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
         Properties:
             Scheme: internal
-            Subnets: !Ref PrivateSubnetIds
+            Subnets: !Ref Subnets
             SecurityGroups: 
                 - !Ref MasterELBSecurityGroup
             Listeners:
@@ -272,32 +269,32 @@ Resources:
             Policies:
                 -   PolicyName: ecs-service
                     PolicyDocument:
-                    Statement:
-                     - Effect: Allow
-                       Action:
-                         - 'elasticloadbalancing:Describe*'
-                         - 'logs:CreateLogGroup'
-                         - 'logs:CreateLogStream'
-                         - 'logs:PutLogEvents'
-                         - 'ecs:*'
-                         - 'ecr:*'
-                       Resource: '*'
-                     - Sid: PassSlaveECSRole
-                       Effect: Allow
-                       Action: 
-                         - 'iam:PassRole'
-                       # this is bit of a hack to avoid the cyclic dependencies which is a pain in a nested stack
-                       Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${EnvironmentName}-SlaveECSRole-${AWS::Region}'
-                     - Sid: AllowEc2Launch
-                       Effect: Allow
-                       Action:
-                         - "ec2:DescribeSpotInstanceRequests"
-                         - "ec2:CancelSpotInstanceRequests"
-                         - "ec2:GetConsoleOutput"
-                         - "ec2:RequestSpotInstances"
-                         - "ec2:RunInstances"
-                         - "ec2:StartInstances"
-                       Resource: '*'
+                        Statement:
+                         - Effect: Allow
+                           Action:
+                             - 'elasticloadbalancing:Describe*'
+                             - 'logs:CreateLogGroup'
+                             - 'logs:CreateLogStream'
+                             - 'logs:PutLogEvents'
+                             - 'ecs:*'
+                             - 'ecr:*'
+                           Resource: '*'
+                         - Sid: PassSlaveECSRole
+                           Effect: Allow
+                           Action: 
+                             - 'iam:PassRole'
+                           # this is bit of a hack to avoid the cyclic dependencies which is a pain in a nested stack
+                           Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${EnvironmentName}-SlaveECSRole-${AWS::Region}'
+                         - Sid: AllowEc2Launch
+                           Effect: Allow
+                           Action:
+                             - "ec2:DescribeSpotInstanceRequests"
+                             - "ec2:CancelSpotInstanceRequests"
+                             - "ec2:GetConsoleOutput"
+                             - "ec2:RequestSpotInstances"
+                             - "ec2:RunInstances"
+                             - "ec2:StartInstances"
+                           Resource: '*'
 
     MasterECSInstanceProfile:
         Type: AWS::IAM::InstanceProfile

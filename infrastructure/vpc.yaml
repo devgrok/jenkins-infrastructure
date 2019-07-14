@@ -203,8 +203,8 @@ Outputs:
     VPC: 
         Description: A reference to the created VPC
         Value: !Ref VPC
-    
-    VPCCidr:
+
+    VpcCIDR:
         Description: A reference to the VPC CIDR block
         Value: !GetAtt VPC.CidrBlock
 
