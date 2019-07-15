@@ -29,7 +29,7 @@ Resources:
 
     Service:
         Type: AWS::ECS::Service
-        DependsOn: !Ref LoadBalancer
+#        DependsOn: !Ref LoadBalancer
         Properties:
             Cluster: !Ref Cluster
             Role: !Ref ServiceRole
@@ -52,7 +52,7 @@ Resources:
             Volumes:
                 -
                     Host:
-                        SourcePath: /var/jenkins_home
+                        SourcePath: /data/
                     Name: jenkins_home
             ContainerDefinitions:
                 - Name: jenkins-master

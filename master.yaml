@@ -12,7 +12,11 @@ Parameters:
     ClusterSize:
         Description: How many ECS hosts do you want to initially deploy?
         Type: Number
-        Default: 2
+        Default: 1
+    MaxClusterSize:
+        Description: How many ECS hosts do you want it to scale up to?
+        Type: Number
+        Default: 10
     InstanceType:
         Description: Which instance type should we use to build the ECS cluster?
         Type: String
@@ -21,6 +25,9 @@ Parameters:
         Description: Where the cloudformation templates are stored
         Type: String
         Default: https://devgrok-blog-files.s3.amazonaws.com/jenkins-infrastructure
+    KeyName:
+        Type: String
+        Default: ''
 Resources:
 
     VPC:
@@ -49,7 +56,8 @@ Resources:
         Properties:
             TemplateURL: !Sub "${BaseStackUrl}/infrastructure/master-ecs-cluster.yaml"
             Parameters:
-                ClusterSize: !Ref ClusterSize
+                ClusterSize: 1
+                MaxClusterSize: 2
                 InstanceType: !Ref InstanceType
                 EnvironmentName: !Ref AWS::StackName
                 VPC: !GetAtt VPC.Outputs.VPC
@@ -58,6 +66,7 @@ Resources:
                 LoadBalancerSubnets: !GetAtt VPC.Outputs.PublicSubnets
                 MasterELBSecurityGroup: !GetAtt SecurityGroups.Outputs.LoadBalancerSecurityGroup
                 EFSMountTargetSecurityGroup: !GetAtt SecurityGroups.Outputs.EFSMountTargetSecurityGroup
+                KeyName: !Ref KeyName
 
 #    Slave:
 #        Type: AWS::CloudFormation::Stack
@@ -65,6 +74,7 @@ Resources:
 #            TemplateURL: !Sub "${BaseStackUrl}/slave-ecs-cluster.yaml"
 #            Parameters:
 #                ClusterSize: !Ref ClusterSize
+#                MaxClusterSize: !Ref MaxClusterSize
 #                InstanceType: !Ref InstanceType
 #                EnvironmentName: !Ref AWS::StackName
 #                VPC: !GetAtt VPC.Outputs.VPC
@@ -79,11 +89,11 @@ Resources:
 #                Cluster: !GetAtt ECS.Outputs.Cluster
 #                ECSAutoScalingGroupName: !GetAtt ECS.Outputs.ECSAutoScalingGroupName
 
-#    JenkinsService:
-#        Type: AWS::CloudFormation::Stack
-#        Properties:
-#            TemplateURL: !Sub "${BaseStackUrl}/services/jenkins-service/service.yaml"
-#            Parameters:
-#                VPC: !GetAtt VPC.Outputs.VPC
-#                Cluster: !GetAtt ECS.Outputs.Cluster
-#                LoadBalancer: !GetAtt ECS.Outputs.LoadBalancer 
+    JenkinsService:
+        Type: AWS::CloudFormation::Stack
+        Properties:
+            TemplateURL: !Sub "${BaseStackUrl}/services/jenkins-service/service.yaml"
+            Parameters:
+                VPC: !GetAtt VPC.Outputs.VPC
+                Cluster: !GetAtt Master.Outputs.Cluster
+                LoadBalancer: !GetAtt Master.Outputs.LoadBalancer 

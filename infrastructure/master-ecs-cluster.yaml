@@ -17,7 +17,12 @@ Parameters:
     ClusterSize:
         Description: How many ECS hosts do you want to initially deploy?
         Type: Number
-        Default: 3
+        Default: 1
+
+    MaxClusterSize:
+        Description: When updating, how many instances can there be (make it 2 * ClusterSize)
+        Type: Number
+        Default: 2
 
     VPC:
         Description: Choose which VPC this ECS cluster should be deployed to
@@ -45,6 +50,7 @@ Parameters:
 
     LoadBalancerCertificateArn:
         Type: String
+        # TODO replace this with a certificate issued to the domain under which your jenkins is hosted
         Default: 'arn:aws:acm:us-east-1:151743893450:certificate/4e2017af-9197-46e0-83bf-49b910d37366'
     
     KeyName:
@@ -142,11 +148,12 @@ Resources:
         Type: AWS::AutoScaling::AutoScalingGroup
         Properties:
             VPCZoneIdentifier: !Ref Subnets
+#            VPCZoneIdentifier: !Ref LoadBalancerSubnets
             LaunchTemplate:
                 LaunchTemplateId: !Ref MasterECSLaunchTemplate
                 Version: !GetAtt [MasterECSLaunchTemplate, LatestVersionNumber]
             MinSize: !Ref ClusterSize
-            MaxSize: !Ref ClusterSize # +1
+            MaxSize: !Ref MaxClusterSize
             DesiredCapacity: !Ref ClusterSize
             Tags:
                 - Key: Name
@@ -207,6 +214,7 @@ Resources:
                         mount -a
                         #Give ownership to jenkins user
                         chown 1000 /data
+                        /opt/aws/bin/cfn-signal --region ${AWS::Region} --stack ${AWS::StackName} --resource MasterECSAutoScaling
         Metadata:
             'AWS::CloudFormation::Init':
                 config:
@@ -228,10 +236,11 @@ Resources:
             - LoadBalancerPort: '80'
               InstancePort: '8080'
               Protocol: HTTP
-            - LoadBalancerPort: '443'
-              InstancePort: '8080'
-              Protocol: HTTPS
-              SSLCertificateId: !Ref LoadBalancerCertificateArn  
+            # TODO after configuring certificate in parameters, uncomment below
+            # - LoadBalancerPort: '443'
+            #   InstancePort: '8080'
+            #   Protocol: HTTPS
+            #   SSLCertificateId: !Ref LoadBalancerCertificateArn  
             - LoadBalancerPort: '50000'
               InstancePort: '50000'
               Protocol: TCP            
@@ -260,12 +269,10 @@ Resources:
             RoleName: !Sub ${EnvironmentName}-MasterEC2Role-${AWS::Region}
             AssumeRolePolicyDocument:
                 Statement:
-                - Effect: Allow
-                Principal:
-                  Service:
-                  - ec2.amazonaws.com
-                Action:
-                - 'sts:AssumeRole'
+                    -   Effect: Allow
+                        Principal:
+                            Service: ec2.amazonaws.com
+                        Action: sts:AssumeRole
             Policies:
                 -   PolicyName: ecs-service
                     PolicyDocument:
